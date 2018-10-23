@@ -23,6 +23,10 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
+//Added for Lab-4
+int thread_create(void(*fn)(void*), void *arg, void *stack);
+int thread_join(void);
+int thread_exit(void) __attribute__((noreturn));
 
 // ulib.c
 int stat(const char*, struct stat*);
@@ -37,3 +41,7 @@ void* memset(void*, int, uint);
 void* malloc(uint);
 void free(void*);
 int atoi(const char*);
+//Added for Lab-4
+void lock_init(lock_t *lock);
+void lock_acquire(lock_t *lock);
+void lock_release(lock_t *lock);
