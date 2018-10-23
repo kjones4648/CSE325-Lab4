@@ -104,3 +104,19 @@ memmove(void *vdst, const void *vsrc, int n)
     *dst++ = *src++;
   return vdst;
 }
+
+/* Lab-3 Keaton Jones and Erik Garcia */
+void lock_init(lock_t *lock) {
+  lock->is_locked = 0;
+}
+
+/* Lab-3 Keaton Jones and Erik Garcia */
+void lock_acquire(lock_t *lock) {
+  while(xchg(&lock->is_locked, 1) != 0);   //xchg call is in x86.h
+}
+
+/* Lab-3 Keaton Jones and Erik Garcia */
+void lock_release(lock_t *lock) {
+  lock->is_locked = 0;
+  //xchg(&lock->is_locked, 0);
+}
