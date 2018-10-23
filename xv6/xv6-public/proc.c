@@ -7,6 +7,7 @@
 #include "proc.h"
 #include "spinlock.h"
 
+
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
@@ -111,7 +112,7 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
-
+  p->is_thread = 0;
   return p;
 }
 
@@ -160,6 +161,7 @@ growproc(int n)
 {
   uint sz;
   struct proc *curproc = myproc();
+  struct proc *p;
 
   sz = curproc->sz;
   if(n > 0){
@@ -170,6 +172,14 @@ growproc(int n)
       return -1;
   }
   curproc->sz = sz;
+
+  //Increase address space for child threads too
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+    if((p->parent == curproc) && (p->pgdir == curproc->pgdir))
+      p->sz = curproc->sz;
+  release(&ptable.lock);
+
   switchuvm(curproc);
   return 0;
 }
@@ -199,6 +209,7 @@ fork(void)
   np->sz = curproc->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
+  np->is_thread = 0;
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
@@ -252,8 +263,11 @@ exit(void)
   // Parent might be sleeping in wait().
   wakeup1(curproc->parent);
 
+
   // Pass abandoned children to init.
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    //if((p->parent == curproc) && (p->pgdir == curproc->pgdir))
+     //curproc->pgdir = copyuvm(p->pgdir, p->sz);
     if(p->parent == curproc){
       p->parent = initproc;
       if(p->state == ZOMBIE)
@@ -531,4 +545,179 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+/* Lab-4 Keaton Jones and Erik Garcia */ 
+int
+thread_create(void (*fn)(void*), void *arg, void *stack)
+{
+  int i, pid;
+  struct proc *np;
+  uint stack_pointer;   //stack pointer
+  uint ustack[2];  // Set up the stack like in exec.c
+  struct proc *curproc = myproc();
+
+  //Page align the stack
+  if(((uint)stack % PGSIZE) != 0) {
+    return -1;
+  }
+
+  //Check to see if stack is not less than a pg
+   if((curproc->sz - (uint)stack) < PGSIZE) {
+    return -1;
+  }
+
+  // Allocate process as in fork
+  if((np = allocproc()) == 0) {
+    return -1;
+  }
+
+  //Set up process state
+  np->stack = stack;    //The thread's stack
+  if(((uint*)stack)[0] == 0)   //If allocated address not set
+    np->stack_addr_to_free = (uint)stack;
+  else
+    np->stack_addr_to_free = ((uint*)stack)[0];
+  np->pgdir = curproc->pgdir;     //Thread should have same address space
+  np->sz = (uint)stack + PGSIZE;  //Stack is one page
+  np->parent = curproc;
+  *np->tf = *curproc->tf;
+  np->is_thread = 1;
+
+  //CLear %eax so that fork returns 0 in the child..
+  np->tf->eax = 0;
+
+  //Set up the thread's stack
+  stack_pointer = (uint)stack + PGSIZE;
+  ustack[0] = 0xffffffff;       //The fake return PC
+  ustack[1] = (uint)arg;        //Store arg for fn
+  stack_pointer -= 2 * sizeof(uint);
+  if(copyout(np->pgdir, stack_pointer, ustack, 2*sizeof(uint)) < 0)
+    return -1;
+
+  //Thread's stack pointer to the stack
+  np->tf->esp = stack_pointer;
+
+  //Thread's instruction pointer to the function
+  np->tf->eip = (uint)fn;
+
+  //This is just like in fork():
+   for(i = 0; i < NOFILE; i++)
+    if(curproc->ofile[i])
+      np->ofile[i] = filedup(curproc->ofile[i]);
+   np->cwd = idup(curproc->cwd);
+
+  safestrcpy(np->name, curproc->name, sizeof(curproc->name));
+
+  pid = np->pid;
+
+  acquire(&ptable.lock);
+
+  np->state = RUNNABLE;
+
+  release(&ptable.lock);
+
+  return pid;
+
+}
+
+
+/* Lab-4 Keaton Jones and Erik Garcia */
+// Wait for a child process to exit and return its pid.
+// Return -1 if this process has no children.
+// This is very similar to wait():
+int
+thread_join(void)
+{
+  struct proc *p;
+  int havekids, pid;
+  struct proc *curproc = myproc();
+  
+  acquire(&ptable.lock);
+  for(;;){
+    // Scan through table looking for exited children.
+    havekids = 0;
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      //Look for the child that is thread
+      if((p->parent != curproc) || (p->pgdir != curproc->pgdir) || (!p->is_thread))
+        continue;
+
+      havekids = 1;
+      if(p->state == ZOMBIE){
+        // Found one.
+        pid = p->pid;
+        kfree(p->kstack);
+        p->kstack = 0;
+        freevm(p->pgdir);
+        p->pid = 0;
+        p->parent = 0;
+        p->name[0] = 0;
+        p->killed = 0;
+        p->state = UNUSED;
+        //*stack = (void*)p->stack_addr_to_free; */
+        release(&ptable.lock);
+        return pid;
+      }
+    }
+
+    // No point waiting if we don't have any children.
+    if(!havekids || curproc->killed){
+      release(&ptable.lock);
+      return -1;
+    }
+
+    // Wait for children to exit.  (See wakeup1 call in proc_exit.)
+    sleep(curproc, &ptable.lock);  //DOC: wait-sleep
+  }
+}
+
+
+/* Lab-4 Keaton Jones and Erik Garcia */
+// Exit the current process.  Does not return.
+// An exited process remains in the zombie state
+// until its parent calls wait() to find out it exited.
+void
+thread_exit(void)
+{
+  struct proc *curproc = myproc();
+  struct proc *p;
+  int fd;
+
+  if(curproc == initproc)
+    panic("init exiting");
+
+  // Close all open files.
+  for(fd = 0; fd < NOFILE; fd++){
+    if(curproc->ofile[fd]){
+      fileclose(curproc->ofile[fd]);
+      curproc->ofile[fd] = 0;
+    }
+  }
+
+  begin_op();
+  iput(curproc->cwd);
+  end_op();
+  curproc->cwd = 0;
+
+  acquire(&ptable.lock);
+
+  // Parent might be sleeping in wait().
+  wakeup1(curproc->parent);
+
+
+  // Pass abandoned children to init.
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if((p->parent == curproc) && (p->pgdir == curproc->pgdir))
+      curproc->pgdir = copyuvm(p->pgdir, p->sz);
+    if(p->parent == curproc){
+      p->parent = initproc;
+      if(p->state == ZOMBIE)
+        wakeup1(initproc);
+    }
+  }
+
+  // Jump into the scheduler, never to return.
+  curproc->state = ZOMBIE;
+  sched();
+  panic("zombie exit");
 }

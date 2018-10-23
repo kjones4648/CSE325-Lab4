@@ -7,6 +7,8 @@
 #include "mmu.h"
 #include "proc.h"
 
+#define NULL 0
+
 int
 sys_fork(void)
 {
@@ -88,4 +90,37 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+int
+sys_thread_create(void) {
+  void (*fn)(void*);
+  void *arg;
+  void *stack;
+
+  if(argptr(0, (void*)&fn, sizeof(void*)) < 0)
+    return -1;
+  if(argptr(1, (void*)&arg, sizeof(void*)) < 0)
+    return -1;
+  if(argptr(2, (void*)&stack, sizeof(void*)) < 0)
+    return -1;
+
+  return thread_create(fn, arg, stack);
+  
+}
+
+int 
+sys_thread_join(void) {
+  void **stack = NULL;
+  if(argptr(0, (void*)&stack, sizeof(void**)) < 0)
+    return -1;
+
+  return thread_join();
+}
+
+int
+sys_thread_exit(void)
+{
+  thread_exit();
+  return 0;  // not reached
 }
